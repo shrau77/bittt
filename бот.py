@@ -1,0 +1,113 @@
+import json
+import requests
+from flask import Flask, request
+import os
+
+# --- Настройки ---
+# Правильно получаем токен из переменной окружения
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    # Проверяем, что переменная установлена
+    raise ValueError("Не установлена переменная окружения TELEGRAM_BOT_TOKEN")
+
+# Правильно формируем URL API, используя полученный токен
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
+
+# Словарь для хранения счётчиков пиздюлей для каждого чата/пользователя
+# Формат: { chat_id: count, ... }
+counter_data = {}
+
+app = Flask(__name__)
+
+def send_message(chat_id, text, reply_markup=None):
+    """Отправляет сообщение пользователю."""
+    url = TELEGRAM_API_URL + "sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    response = requests.post(url, json=payload)
+    print(f"Отправлено сообщение: {response.status_code}, {response.text}")
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    """Редактирует существующее сообщение."""
+    url = TELEGRAM_API_URL + "editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    response = requests.post(url, json=payload)
+    print(f"Отредактировано сообщение: {response.status_code}, {response.text}")
+
+def get_or_create_counter(chat_id):
+    """Возвращает текущий счётчик для чата, инициализирует, если его нет."""
+    if chat_id not in counter_data: # Исправлено: counter_data
+        counter_data[chat_id] = 0
+    return counter_data[chat_id]
+
+def increment_counter(chat_id):
+    """Увеличивает счётчик для чата."""
+    counter_data[chat_id] = get_or_create_counter(chat_id) + 1
+    return counter_data[chat_id]
+
+def build_keyboard(chat_id):
+    """Создаёт инлайн-клавиатуру с кнопкой 'отпиздить' для конкретного чата."""
+    current_count = get_or_create_counter(chat_id)
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": f"Отпиздить (Пиздюлей: {current_count})", "callback_data": "increment"}
+            ]
+        ]
+    }
+    return json.dumps(keyboard)
+
+def send_start_message(chat_id):
+    """Отправляет стартовое сообщение с кнопкой."""
+    text = "Помните, рано или поздно все пиздюли дойдут до адресата, нам важен каждый пиздюль, поэтому спасибо что выбрали нас"
+    reply_markup = build_keyboard(chat_id)
+    send_message(chat_id, text, reply_markup)
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обрабатывает входящие обновления от Telegram."""
+    try:
+        update = request.get_json()
+        print(f"Получено обновление: {json.dumps(update, indent=2)}")
+
+        if 'message' in update and update['message'].get('text') == '/start':
+            # Обработка команды /start
+            chat_id = update['message']['chat']['id']
+            send_start_message(chat_id)
+
+        elif 'callback_query' in update:
+            # Обработка нажатия на кнопку
+            callback_query = update['callback_query']
+            chat_id = callback_query['message']['chat']['id']
+            message_id = callback_query['message']['message_id']
+            data = callback_query['data']
+
+            if data == "increment":
+                # Увеличиваем счётчик пиздюлей для конкретного чата
+                new_count = increment_counter(chat_id)
+                print(f"Счётчик пиздюлей для чата {chat_id} увеличен до: {new_count}")
+                # Редактируем сообщение, чтобы показать новый счётчик
+                new_text = "Помните, рано или поздно все пиздюли дойдут до адресата, нам важен каждый пиздюль, поэтому спасибо что выбрали нас"
+                reply_markup = build_keyboard(chat_id) # Перестраиваем клавиатуру с новым значением
+                edit_message(chat_id, message_id, new_text, reply_markup)
+
+    except Exception as e:
+        print(f"Ошибка при обработке обновления: {e}")
+
+    return 'OK', 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
